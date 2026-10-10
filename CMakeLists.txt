@@ -18,7 +18,8 @@ add_executable(compiler
   reader.cpp
   # step2_eval.cpp
   # step3_env.cpp
-  step4_if_fn_do.cpp
+  # step4_if_fn_do.cpp
+  main.cpp
   string.cpp
   type.cpp
 )

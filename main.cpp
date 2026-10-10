@@ -1,3 +1,7 @@
+#include <readline/history.h>
+#include <readline/readline.h>
+
+#include <cstring>
 #include <format>
 #include <iostream>
 #include <iterator>
@@ -5,9 +9,6 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
-#include <cstring>
-#include <readline/readline.h>
-#include <readline/history.h>
 
 #include "Environment.h"
 #include "mal.h"
@@ -32,75 +33,80 @@ void assertArgNumBetween(std::string_view name, int min, int max, int got) {
 }
 
 // TODO: validation stuff for it
-auto EVAL(const malValuePtr ast, malEnvPtr env) -> malValuePtr {
+auto EVAL(malValuePtr ast, malEnvPtr env) -> malValuePtr {
   if (env == nullptr) {
     throw std::runtime_error("EVAL env is nullptr");
   }
-  auto list = dynamic_cast<AST::List*>(ast.cptr());
-  if (!list || list->size() == 0) {
+  while (true) {
+    auto list = dynamic_cast<AST::List*>(ast.cptr());
+    if (!list || list->size() == 0) {
+      return ast->eval(env);
+    }
+    if (auto s = dynamic_cast<AST::Symbol*>(list->item(0).cptr()); s) {
+      std::string_view val = s->cValue();
+      if (val == "def!") {
+        assertArgNum(2, list->size() - 1);
+        auto keyPtr = dynamic_cast<AST::Symbol*>(list->item(1).cptr());
+        std::string_view key = keyPtr->cValue();
+        return env->set(key.data(), EVAL(list->item(2), env));
+      } else if (val == "let*") {
+        assertArgNum(2, list->size() - 1);
+        auto bindings = dynamic_cast<AST::Sequence*>(list->item(1).cptr());
+        if (!bindings) {
+          throw std::runtime_error("expected list or vector after let*");
+        }
+        malEnvPtr nextEnv(new malEnv(env));
+        for (size_t i = 0; i < bindings->size(); i += 2) {
+          auto key = dynamic_cast<AST::Symbol*>(bindings->item(i).cptr());
+          auto val = EVAL(bindings->item(i + 1), nextEnv);
+          nextEnv->set(key->cValue(), val);
+        }
+        // return EVAL(list->item(2), nextEnv);
+        env = nextEnv;
+        ast = list->item(2);
+        continue;
+      } else if (val == "do") {
+        if (list->size() == 1) {
+          return AST::nilValue();
+        }
+        for (size_t i = 1; i < list->size(); i++) {
+          EVAL(list->item(i), env);
+        }
+        // return list->item(list->size()-1);
+        ast = list->item(list->size()-1);
+        continue;
+
+      } else if (val == "if") {
+        assertArgNumBetween("if", 2, 3, list->size() - 1);
+        auto cond = EVAL(list->item(1), env)->isTrue();
+        if (!cond and list->size() - 1 == 2) {
+          return AST::nilValue();
+        }
+        return EVAL(list->item(cond ? 2 : 3), env);
+
+      } else if (val == "fn*") {
+        if (list->size() != 3) {
+          throw std::runtime_error(
+              std::format("fn* requires 3 arg got {}", list->size()));
+        }
+        // malEnvPtr nextEnv(new malEnv(env));
+        auto args = dynamic_cast<AST::Sequence*>(list->item(1).cptr());
+        if (!args) {
+          throw std::runtime_error("require param for fn");
+        }
+        std::vector<std::string> params;
+        for (auto& arg : args->m_vec) {
+          auto sym = dynamic_cast<AST::Symbol*>(arg.cptr());
+          if (!sym) {
+            throw std::runtime_error("need param of fn to be a symbol");
+          }
+          params.push_back(sym->value());
+        }
+        return AST::lambda(std::move(params), list->item(2), env);
+      }
+    }
     return ast->eval(env);
   }
-  if (auto s = dynamic_cast<AST::Symbol*>(list->item(0).cptr()); s) {
-    std::string_view val = s->cValue();
-    if (val == "def!") {
-      assertArgNum(2, list->size() - 1);
-      auto keyPtr = dynamic_cast<AST::Symbol*>(list->item(1).cptr());
-      std::string_view key = keyPtr->cValue();
-      return env->set(key.data(), EVAL(list->item(2), env));
-    } else if (val == "let*") {
-      assertArgNum(2, list->size() - 1);
-      auto bindings = dynamic_cast<AST::Sequence*>(list->item(1).cptr());
-      if (!bindings) {
-        throw std::runtime_error("expected list or vector after let*");
-      }
-      malEnvPtr nextEnv(new malEnv(env));
-      for (size_t i = 0; i < bindings->size(); i += 2) {
-        auto key = dynamic_cast<AST::Symbol*>(bindings->item(i).cptr());
-        auto val = EVAL(bindings->item(i + 1), nextEnv);
-        nextEnv->set(key->cValue(), val);
-      }
-      return EVAL(list->item(2), nextEnv);
-    } else if (val == "do") {
-      if (list->size() == 1) {
-        return AST::nilValue();
-      }
-      for (size_t i = 1; i < list->size(); i++) {
-        malValuePtr ans = EVAL(list->item(i),env);
-        if (i == list->size() - 1) {
-          return ans;
-        }
-      }
-
-    } else if (val == "if") {
-      assertArgNumBetween("if", 2, 3, list->size() - 1);
-      auto cond = EVAL(list->item(1), env)->isTrue();
-      if (!cond and list->size() - 1 == 2) {
-        return AST::nilValue();
-      }
-      return EVAL(list->item(cond ? 2 : 3), env);
-
-    } else if (val == "fn*") {
-      if (list->size() != 3) {
-        throw std::runtime_error(
-            std::format("fn* requires 3 arg got {}", list->size()));
-      }
-      // malEnvPtr nextEnv(new malEnv(env));
-      auto args = dynamic_cast<AST::Sequence*>(list->item(1).cptr());
-      if (!args) {
-        throw std::runtime_error("require param for fn");
-      }
-      std::vector<std::string> params;
-      for (auto& arg : args->m_vec) {
-        auto sym = dynamic_cast<AST::Symbol*>(arg.cptr());
-        if (!sym) {
-          throw std::runtime_error("need param of fn to be a symbol");
-        }
-        params.push_back(sym->value());
-      }
-      return AST::lambda(std::move(params), list->item(2), env);
-    }
-  }
-  return ast->eval(env);
 }
 
 auto READ(const std::string& param) -> malValuePtr {
@@ -119,7 +125,6 @@ static AST::BuiltInFn::ApplyFn builtIn_add, builtIn_sub, builtIn_mul,
     builtIn_isEmpty, builtIn_count, builtIn_prStr, builtIn_str, builtIn_prn,
     builtIn_println;
 
-
 int insertNewLine(int count, int key) {
   (void)count;
   (void)key;
@@ -131,8 +136,7 @@ int insertNewLine(int count, int key) {
 static malEnvPtr activeEnv = nullptr;
 
 static const std::vector<std::string> specialForms = {
-    "def!", "let*", "do", "if", "fn*", "quote", "quasiquote", "splice-unquote"
-};
+    "def!", "let*", "do", "if", "fn*", "quote", "quasiquote", "splice-unquote"};
 
 static char* env_variable_generator(const char* text, int state) {
   static std::vector<std::string> matches;
@@ -195,7 +199,7 @@ auto main() -> int {
 
   rep("(def! not (fn* (a) (if a false true)))", globalEnv);
 
-  char *line = NULL;
+  char* line = NULL;
   rl_bind_keyseq("\033[13;2u", insertNewLine);
   rl_bind_keyseq("\033[27;2;13~", insertNewLine);
   rl_bind_keyseq("\033\r", insertNewLine);
@@ -309,8 +313,9 @@ malValuePtr builtIn_div(const std::string& name, malValueIter argsBegin,
 }
 
 template <typename Op>
-static malValuePtr numericCompare(const std::string& name, malValueIter argsBegin,
-                                  malValueIter argsEnd, Op op) {
+static malValuePtr numericCompare(const std::string& name,
+                                  malValueIter argsBegin, malValueIter argsEnd,
+                                  Op op) {
   assertArgNum(2, std::distance(argsBegin, argsEnd));
   AST::Integer* arg1 = dynamic_cast<AST::Integer*>(argsBegin->cptr());
   AST::Integer* arg2 = dynamic_cast<AST::Integer*>((argsBegin + 1)->cptr());
@@ -338,8 +343,8 @@ malValuePtr builtIn_greater(const std::string& name, malValueIter argsBegin,
                         [](int64_t a, int64_t b) { return a > b; });
 }
 
-malValuePtr builtIn_greaterEqual(const std::string& name, malValueIter argsBegin,
-                                 malValueIter argsEnd) {
+malValuePtr builtIn_greaterEqual(const std::string& name,
+                                 malValueIter argsBegin, malValueIter argsEnd) {
   return numericCompare(name, argsBegin, argsEnd,
                         [](int64_t a, int64_t b) { return a >= b; });
 }
